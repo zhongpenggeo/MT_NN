@@ -1,9 +1,12 @@
-
+'''
+neural network
+'''
 
 import numpy as np
 
 eta = np.finfo(np.float32).eps
 
+# normaliation
 def input_max(X,lb,ub):
     X = X/ub
     return X
@@ -16,18 +19,9 @@ def input_minmax(X,lb,ub):
 def input_log(X,lb,ub):
     return torch.log10(X)/np.log10(ub)
 
-def act_gaussian(x):
-    return np.exp(-x**2)
-
+# build a network
 class FNN(object):
     def __init__(self,net_layers,activation_func,net_type="complex"):
-        num_layers = len(net_layers)
-        # act_func = {}
-        # for ii,act in enumerate(activation_func):
-        #     if act in act_dict.keys():
-        #         act_func[ii] = act_dict[act]
-        #     else:
-        #         raise RuntimeError('bad activation fucntion name of %d'%(ii+1))
         w_0 = np.random.uniform(-1,1,size=(net_layers[1],net_layers[0]))
         b_0 = np.random.uniform(-1,1,size=(net_layers[1],1))
         II = np.array([0+1j],dtype=complex)
@@ -50,14 +44,8 @@ class FNN(object):
         self.w1 = w_2+w_3*II
     def __call__(self,x,lb,ub):
         x = input_minmax(x,lb,ub)
-        X1 = act_gaussian(np.dot(x,self.w0.T)+self.b0.T)
+        X1 = np.tanh(np.dot(x,self.w0.T)+self.b0.T)
         Y  = np.dot(X1,self.w1.T)
+        # X1: the output of hidden layer
+        # Y: the output of last(output) layer
         return X1,Y
-
-    # def get_w(number):
-    #     if number==0:
-    #         return self.w0
-    #     elif number ==1:
-    #         return self.w1
-    #     else:
-    #         raise RuntimeError('bad nubmer, please input 0 or 1')

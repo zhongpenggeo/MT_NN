@@ -1,14 +1,19 @@
-#### MT_NN
+### Summary
+2D MT forward modeling by using local extreme machine learning.
 
-Software required : numpy, scipy
+### Requirements
+python >=3.0
+scipy>=1.6
+matplotlib>=3.3
+numpy>=1.2
+pyDOE
 
-Program language : the code is written in Python 3.6
+### Usage
+you can refer to test_2D0_TE.py and others test .py files
 
-#### License
-
-MIT
-
-#### Contact
-
-Zhong Peng (zhongpenggeo@163.com)
-
+### Directory tree 
+ - utils: functions to compute boundary conditions
+ - scripts: classes for 2D MT forward modeling
+ - Data: results of finite element method for 2D-0 and 2D-2 COMMEMI 
+### License
+This software is distributed with the MIT license which translates roughly that you can use it however you want and for whatever reason you want. 

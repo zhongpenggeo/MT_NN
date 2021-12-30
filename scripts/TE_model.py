@@ -1,60 +1,44 @@
 """
 """
-def setup_seed(seed):
-    np.random.seed(seed)
-    # random.seed(seed)
-    # np.manual_seed(seed) #cpu
-    # np.cuda.manual_seed_all(seed)  #并行gpu
-    # np.backends.cudnn.deterministic = True  #cpu/gpu结果一致
-    # np.backends.cudnn.benchmark = True
-
-#from np.utils.tensorboard import SummarzWriter
+from pyDOE import lhs
 from scipy.linalg import lstsq
 import numpy as np
-# np.manual_seed(1)
-# np.random.seed(1)
 import time
-import sys
 import copy
-#from tensorboardY import SummarzWriter
 from datetime import datetime
-# setup_seed(1)
-
 from NeuralNet import FNN
-# szs.path.append("../utils")
-# from lbfgsnew import LBFGSNew
+import sys
+sys.path.append('../utils')
+from mtE1D import mt1dte
 
+# xavier_uniform initialization
+def np_xavier_uniform(value,shape):
+    fan_in=shape[0]*shape[1]
+    fan_out=shape[0]*shape[1]
+    limit=np.sqrt(6/(fan_in + fan_out))*value
+    return np.random.uniform(-limit,limit,size=shape)
+# initialization method
 init_dict = {
     "default": None, # uniform
     "uniform": np.random.uniform,
     "normal": np.random.normal,
-    # "xavier_uniform": np_xavier_uniform,
-    # "xavier_normal": nn.init.xavier_normal_,
+    "xavier_uniform": np_xavier_uniform,
 }
 
-# def np_xavier_uniform(value,shape):
-#     fan_in=shape[0]*shape[1]
-#     fan_out=shape[0]*shape[1]
-#     limit=np.sqrt(6/(fan_in + fan_out))*value
-#     return np.random.uniform(-limit,limit,size=shape)
 
-
-class basic_model(object):
-    def __init__(self,hp,Z_u,Y_test,Z_test,Beta,u_test,BCy,BCz):
+class TE_class(object):
+    def __init__(self,hp,Z_u,Y_test,Z_test,Sigma,freq,BCy,BCz):
         '''
         Z_u: elements in  boundaries, structural data;
         Y_test: all points in y direction(where there is test data); array
         Z_test: all points in Z direction(where there is test data); array
         Beta: media model parameters; array
-        u_test: all E, tuple(real part, imag part)
         Bcy: list including postion of interface in y axis
         Bcz: list including postion of interface in z axis
         '''
-
-        # self.tau_bc = 1.0
-        setup_seed(1)
-        # print(np.initial_seed())
-        net_layers = hp["layers"]
+        np.random.seed(1)
+        self.mu_0 = 4*np.pi*1e-7    
+        self.omega = 2*np.pi*freq
         self.y_nets = len(BCy)-1
         self.z_nets = len(BCz)-1
         self.num_nodes = hp["layers"][-2]
@@ -66,41 +50,25 @@ class basic_model(object):
         self.np_dtype = np.float64
         self.np_complex = np.complex128
 
-        self.error_dict = {
-            # "relative": self.relative_error,
-            "rms"     : self.rms_error,
-            "max"     : self.max_error,
-            "none"    : self.pass_func,
-        }
-
-        # self.model0_0 = FNN(hp["layers"],hp["activation"],hp["net_type"])
-        # self.weight_init(self.model0_0,hp["init"], hp["Rm1"],hp["Rm2"],hp["net_type"])
-        # for ii in range(self.z_nets):
-        #     for jj in range(self.y_nets): 
-        #         if ii !=0 or jj !=0:
-        #             setattr(self,'model{}_{}'.format(ii,jj),copy.deepcopy(self.model0_0))
-
+        self.model0_0 = FNN(hp["layers"],hp["activation"],hp["net_type"])
+        self.weight_init(self.model0_0,hp["init"], hp["Rm1"],hp["Rm2"],hp["net_type"])
+        # use same parameters for all neural networks
         for ii in range(self.z_nets):
             for jj in range(self.y_nets): 
-                setattr(self,'model{}_{}'.format(ii,jj),FNN(hp["layers"],hp["activation"],hp["net_type"]))
-                self.weight_init(self.model0_0,hp["init"], hp["Rm1"],hp["Rm2"],hp["net_type"])
+                if ii !=0 or jj !=0:
+                    setattr(self,'model{}_{}'.format(ii,jj),copy.deepcopy(self.model0_0))
 
-        # self.to_cuda(hp["cuda"],Z_u,Y_test,Z_test,Beta,u_test,BCy,BCz)
-        self.to_model(Z_u,Y_test,Z_test,Beta,u_test,BCy,BCz)
+        # initiaiza all parameters of the class
+        self.to_model(Z_u,Y_test,Z_test,Sigma,freq,BCy,BCz)
+        self.Beta = np.sqrt(self.mu_0*self.Sigma*self.omega)
 
-    def train(self, cond,driver,sample_method,er):
+    def train(self, cond,driver,sample_method):
         start_time = time.time()
-        # self.tr_train(num1)
-        # self.lf_train(num2)
-        self.ls_train(cond,driver,sample_method)
+        self.TE_train(cond,driver,sample_method)
         running_time = time.time()-start_time
         print("all time: {:}".format(self.time_fd(running_time)))
-        error0 = self.error_dict[er](self.predict(self.Y_test,self.Z_test,self.BCy,self.BCz),self.u_test)
-        if er != "none":
-            print("relative error of u is: %.3e " %(error0))
-            print(" ")
 
-    def ls_train(self,cond,driver,sample_method): 
+    def TE_train(self,cond,driver,sample_method): 
         BCy        = self.BCy
         BCz        = self.BCz
         y_nets   = self.y_nets
@@ -110,52 +78,55 @@ class basic_model(object):
         y_inter  = self.y_inter 
         z_inter  = self.z_inter 
         num_nodes  = self.num_nodes
-        # *2 是因为实虚部。因为内部边界有C1连续性需要两个条件，
-        # 而外部边界只有Neumann或Direchlet条件，头尾加起来也刚好两个，
-        # 就等于2*num_nets
-        MM = (y_nets*z_nets)*(y_points*z_points+2*y_inter+2*z_inter)
+        # for each sub-domain, we need calculate 4 boundaries, top and bottom(dy), left and right(dz) BC
+        MM = (y_nets*z_nets)*(y_points*z_points+2*y_inter+2*z_inter) 
         NN = (y_nets*z_nets)*num_nodes
+        # build linear system: Ax=b
         A = np.zeros((MM,NN),dtype=self.np_complex)
         b = np.zeros((MM,1), dtype=self.np_complex)
+        # Imaginary sign
         II  = np.array([1j],dtype=self.np_complex)
+
         ########################   governing equation ############################################
-        # 先求所有model里的governing equation，因为需要lb和ub
-        # print("start governing equation")
-        # start_time = time.time()
-        num_points = y_points*z_points # number of elements in a domain
+        # build part of governing equation in A
+        num_points = y_points*z_points # number of elements in a sub-domain
         for ii in range(z_nets): 
             for jj in range(y_nets): 
                 model = getattr(self,'model{}_{}'.format(ii,jj))
                 col_pos = (ii*y_nets+jj)
-                YY = self.get_uniform_data(self.Y_test[BCz[ii]:BCz[ii+1]+1,BCy[jj]:BCy[jj+1]+1],y_points,z_points,"Y")
-                ZZ = self.get_uniform_data(self.Z_test[BCz[ii]:BCz[ii+1]+1,BCy[jj]:BCy[jj+1]+1],y_points,z_points,"Z")
-                YZ = np.concatenate((YY,ZZ),1)
+                lb = np.array([self.Y_test[BCz[ii],BCy[jj]],self.Z_test[BCz[ii],BCy[jj]]])
+                ub = np.array([self.Y_test[BCz[ii+1],BCy[jj+1]],self.Z_test[BCz[ii+1],BCy[jj+1]]])
+                if sample_method == "uniform":
+                    YY = self.get_uniform_data(self.Y_test[BCz[ii]:BCz[ii+1]+1,BCy[jj]:BCy[jj+1]+1],y_points,z_points,"Y")
+                    ZZ = self.get_uniform_data(self.Z_test[BCz[ii]:BCz[ii+1]+1,BCy[jj]:BCy[jj+1]+1],y_points,z_points,"Z")
+                    YZ = np.concatenate((YY,ZZ),1)
+                elif sample_method == "gaussian":
+                    YY = self.get_gaussian_data(self.Y_test[BCz[ii]:BCz[ii+1]+1,BCy[jj]:BCy[jj+1]+1],y_points,z_points,"Y")
+                    ZZ = self.get_gaussian_data(self.Z_test[BCz[ii]:BCz[ii+1]+1,BCy[jj]:BCy[jj+1]+1],y_points,z_points,"Z")
+                    YZ = np.concatenate((YY,ZZ),1)
+                elif sample_method == "lhs":
+                    YZ = self.get_lhs_data(y_points,z_points,lb,ub)
+                else: 
+                    raise KeyError("bad sample method, please use gaussian or uniform ")
                 # noticed that beta are identical in a domain
                 Beta_ = self.get_uniform_data(self.Beta[BCz[ii]:BCz[ii+1],BCy[jj]:BCy[jj+1]],y_points,z_points,"Z")
-                # print(np.unique(Beta_))
-                lb = YZ.min(0)
-                ub = YZ.max(0)
                 setattr(self,'lb{}_{}'.format(ii,jj),lb)
                 setattr(self,'ub{}_{}'.format(ii,jj),ub)
+                # calculate governing equation 
                 u_yy0,u_zz0,uu0 = self.net_f(model,YZ,Beta_,lb,ub)
                 u_yy = u_yy0 + u_zz0
                 uu   = uu0*(Beta_**2)
-                # print(u_yy)
-                # print(uu)
-                # w_m = np.sum(np.abs(u_yy)+np.abs(uu),1,keepdims=True)
-                w_m = np.linalg.norm(np.concatenate((u_yy,uu),1), None,1,True)
+                u_y_all = np.concatenate((u_yy,uu),1)
+                # scale parameters in equation 20
+                w_m = np.linalg.norm(np.concatenate((u_yy,uu),1),None, 1,True)
                 A[((ii*y_nets+jj))*num_points:((ii*y_nets+jj)+1)*num_points,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = (u_yy+II*uu)/w_m
                 del u_yy,uu
-        # running_time = time.time()-start_time
-        # print("governing equation computation time: {:}".format(self.time_fd(running_time)))
         ################################## END governing equation ##########################################
 
-
         ################################ top and bottom ############################################
-        # print(" ")
-        # print("start top and bottom")
-        # start_time = time.time()
-        num_base = y_nets*z_nets*num_points # number of rows in governing equation
+        # number of points that used in governing equation
+        # it is also the start index of boundary condtions in A
+        num_base = y_nets*z_nets*num_points 
         for jj in range(y_nets): 
             for ii in range(z_nets):
                 row_pos = 2*(z_nets*jj+ii)
@@ -165,59 +136,39 @@ class basic_model(object):
                 ub = getattr(self,'ub{}_{}'.format(ii,jj))
                 Y_inter0,Y_inter1 = self.get_inter_data(self.Y_test[BCz[ii]:BCz[ii+1]+1,BCy[jj]:BCy[jj+1]+1],\
                     self.Z_test[BCz[ii]:BCz[ii+1]+1,BCy[jj]:BCy[jj+1]+1],y_inter,z_inter,"tb")
-                Beta_ = self.Beta[BCz[ii],BCy[jj]]
-                if ii >0:
-                    u_pred0, u_y00 = self.net_interface(model,Y_inter0,lb,ub,"Z")
-                    u_y0 = u_y00/(Beta_**2)
+                bc1 = 2.0/(ub-lb)
+                # top inner boundary
+                if ii > 0:
+                    # calculate C0(u_pred0) and C1(y_y0) continuity
+                    u_pred0, u_y0 = self.net_interface(model,Y_inter0,lb,ub,"Z")
                     u_y_all = np.concatenate((u_y0,u_y1),1)
+                    # scale parameters in equation 21
                     w_i = np.linalg.norm(np.abs(u_y_all),np.inf,axis=1,keepdims=True)
                     A[num_base+(row_pos  )*y_inter:num_base+(row_pos+1)*y_inter,(col_pos-y_nets)*num_nodes:(col_pos-y_nets+1)*num_nodes] = u_y1/w_i
                     A[num_base+(row_pos-1)*y_inter:num_base+(row_pos  )*y_inter,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = -1.0*u_pred0
                     A[num_base+(row_pos)  *y_inter:num_base+(row_pos+1)*y_inter,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = -1.0*u_y0/w_i
                     del u_y0
+                # top outer boundary
                 else:
                     u_pred,_ = model(self.Z_t[jj*y_inter:(jj+1)*y_inter,0:2],lb,ub)
                     A[num_base+(row_pos)*y_inter:num_base+(row_pos+1)*y_inter,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = u_pred
                     b[num_base+(row_pos)*y_inter:num_base+(row_pos+1)*y_inter,:] = self.u_t[jj*y_inter:(jj+1)*y_inter,:]
-                
+                # bottom inner boundary
                 if ii <z_nets-1:
-                    # u_pred1, u_y1 = self.net_interface(model,Y_inter1,lb,ub,"Z")
-                    # Y_inter0: top of domain
-                    # Y_inter1: bottom of domain
-                    u_pred1, u_y11 = self.net_interface(model,Y_inter1,lb,ub,"Z")
-                    u_y1 = u_y11/(Beta_**2)
-
-                    # w_i = np.sum(np.abs(u_y1),1,keepdims=True)
-                    # w_i = np.linalg.norm(np.abs(u_y1),axis=1,keepdims=True)
+                    u_pred1, u_y1 = self.net_interface(model,Y_inter1,lb,ub,"Z")
                     A[num_base+(row_pos+1)*y_inter:num_base+(row_pos+2)*y_inter,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = u_pred1
-                    # A[num_base+(row_pos+2)*y_inter:num_base+(row_pos+3)*y_inter,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = u_y1/w_i
-                    # del u_y1
-
-                # Robin  conditions 
+                # bottom outer boundary
                 else:
-                    # X_end = self.Z_b[jj*y_inter:(jj+1)*y_inter,0:2]
-                    # X_end.requires_grad_()
-                    # # 最后一行的beta值
-                    # Beta_end = self.get_uniform_data(self.Beta[-2:-1,:],1,X_end.size(0),"Z")
-                    # u_pred, u_y = self.net_interface(model,X_end,lb,ub,"Z")
-                    # A[num_base+(row_pos+2)*y_inter:num_base+(row_pos+3)*y_inter,(col_pos)  *num_nodes:(col_pos+1)*num_nodes] = u_y+np.sqrt(2)/2*Beta_end*u_pred
-                    # A[num_base+(row_pos+2)*y_inter:num_base+(row_pos+3)*y_inter,(col_pos+1)*num_nodes:(col_pos+2)*num_nodes] = np.sqrt(2)/2*Beta_end*u_pred
-                    # A[num_base+(row_pos+3)*y_inter:num_base+(row_pos+4)*y_inter,(col_pos)  *num_nodes:(col_pos+1)*num_nodes] = -1.0*(np.sqrt(2)/2*Beta_end*u_pred)
-                    # A[num_base+(row_pos+3)*y_inter:num_base+(row_pos+4)*y_inter,(col_pos+1)*num_nodes:(col_pos+2)*num_nodes] = u_y+np.sqrt(2)/2*Beta_end*u_pred
-
                 # Dirichlet conditons
                     u_pred,_ = model(self.Z_b[jj*y_inter:(jj+1)*y_inter,0:2],lb,ub)
                     A[num_base+(row_pos+1)*y_inter:num_base+(row_pos+2)*y_inter,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = u_pred
                     b[num_base+(row_pos+1)*y_inter:num_base+(row_pos+2)*y_inter,:] = self.u_b[jj*y_inter:(jj+1)*y_inter,:]
-        # running_time = time.time()-start_time
-        # print("top and bottom BC computation time: {:}".format(self.time_fd(running_time)))
         ############################# END top and bottom  ################################################
 
         ################################ left and right ############################################
-        # print(" ")
-        # print("start left and right")
-        # start_time = time.time()
-        num_base = y_nets*z_nets*num_points+(y_nets*z_nets*2)*y_inter # number of rows in governing equation
+        # number of points that used in governing equation and top and bottom boundary
+        # it is also the start index of left andright boundary condtions in A
+        num_base = y_nets*z_nets*num_points+(y_nets*z_nets*2)*y_inter 
         for ii in range(z_nets): 
             for jj in range(y_nets):
                 row_pos = (y_nets*ii+jj)*2
@@ -227,68 +178,41 @@ class basic_model(object):
                 ub = getattr(self,'ub{}_{}'.format(ii,jj))
                 Y_inter0,Y_inter1 = self.get_inter_data(self.Y_test[BCz[ii]:BCz[ii+1]+1,BCy[jj]:BCy[jj+1]+1],\
                     self.Z_test[BCz[ii]:BCz[ii+1]+1,BCy[jj]:BCy[jj+1]+1],y_inter,z_inter,"lr")
-                Beta_ = self.Beta[BCz[ii],BCy[jj]]
                 
+                # left inner boundary
                 if jj>0 :# left
-                    u_pred0, u_y00 = self.net_interface(model,Y_inter0,lb,ub,"Y")
-                    u_y0 = u_y00/(Beta_**2)
+                    u_pred0, u_y0 = self.net_interface(model,Y_inter0,lb,ub,"Y")
                     u_y_all = np.concatenate((u_y0,u_y1),1)
+                    # w_i_r = np.linalg.norm(u_y_all.real,axis=1,keepdims=True)
+                    # w_i_i = np.linalg.norm(u_y_all.imag,axis=1,keepdims=True)
+                    # w_i = w_i_r + II*w_i_i
                     w_i = np.linalg.norm(np.abs(u_y_all),np.inf,axis=1,keepdims=True)
                     A[num_base+(row_pos  )*z_inter:num_base+(row_pos+1)*z_inter,(col_pos-1)*num_nodes:(col_pos)*num_nodes] = u_y1/w_i
                     A[num_base+(row_pos-1)*z_inter:num_base+(row_pos  )*z_inter,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = -1.0*u_pred0
                     A[num_base+(row_pos)  *z_inter:num_base+(row_pos+1)*z_inter,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = -1.0*u_y0/w_i
                     del u_y0
+                # left outer boundary
                 else: # jj==0
                     u_pred,_ = model(self.Z_l[ii*z_inter :(ii+1)*z_inter ,0:2],lb,ub)
                     A[num_base+(row_pos)*z_inter:num_base+(row_pos+1)*z_inter,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = u_pred
                     b[num_base+(row_pos)*z_inter:num_base+(row_pos+1)*z_inter,:] = self.u_l[ii*z_inter :(ii+1)*z_inter ,:]
-
-                    # if Neumann conditions
-                    # _, u_y = self.net_interface(model,self.Z_l[ii*z_inter:(ii+1)*z_inter,0:2],lb,ub,"Y")
-                    # wi = np.sum(np.abs(u_y),1,True)
-                    # A[num_base+(row_pos)*z_inter  :num_base+(row_pos+1)*z_inter,(col_pos)  *num_nodes:(col_pos+1)*num_nodes] = u_y/wi
-                    # A[num_base+(row_pos+1)*z_inter:num_base+(row_pos+2)*z_inter,(col_pos+1)*num_nodes:(col_pos+2)*num_nodes] = u_y/wi
-
-                if jj< y_nets-1: # right
-                    # Y_inter0: top of domain
-                    # Y_inter1: bottom of domain
-                    u_pred1, u_y11 = self.net_interface(model,Y_inter1,lb,ub,"Y")
-                    u_y1 = u_y11/(Beta_**2)
-                    # w_i = np.sum(np.abs(u_y1),1,keepdims=True)
+                # right inner boundary
+                if jj< y_nets-1: 
+                    u_pred1, u_y1 = self.net_interface(model,Y_inter1,lb,ub,"Y")
                     A[num_base+(row_pos+1)*z_inter:num_base+(row_pos+2)*z_inter,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = u_pred1
                     # del u_y1
-
-
+                # right outer boundary
                 else: # jj == y_nets-1:
                     u_pred,_ = model(self.Z_r[ii*z_inter:(ii+1)*z_inter ,0:2],lb,ub)
                     A[num_base+(row_pos+1)*z_inter:num_base+(row_pos+2)*z_inter,(col_pos)*num_nodes:(col_pos+1)*num_nodes] = u_pred
                     b[num_base+(row_pos+1)*z_inter:num_base+(row_pos+2)*z_inter,:] = self.u_r[ii*z_inter :(ii+1)*z_inter,:]
 
-                    # if Neumann conditions
-                    # _, u_y = self.net_interface(model,self.Z_r[ii*z_inter:(ii+1)*z_inter,0:2],lb,ub,"Y")
-                    # wi = np.sum(np.abs(u_y),1,True)
-                    # A[num_base+(row_pos+2)*z_inter:num_base+(row_pos+3)*z_inter,(col_pos)  *num_nodes:(col_pos+1)*num_nodes] = u_y/wi
-                    # A[num_base+(row_pos+3)*z_inter:num_base+(row_pos+4)*z_inter,(col_pos+1)*num_nodes:(col_pos+2)*num_nodes] = u_y/wi
-        # running_time = time.time()-start_time
-        # print("left and right BC computation time: {:}".format(self.time_fd(running_time)))
         ############################################ END left and right  ################################################
 
-        # self.A = A.clone()
-
-        # the first n terms of YY is solution
-        # YY,_ = np.lstsq(b,A)
-
-        # print(" ")
-        # print("star solving equation")
         start_time = time.time()
+        # solve the linear system by least squares method
         YY,res,_,_ = lstsq(A,b,cond=cond, lapack_driver=driver)
-        # running_time = time.time()-start_time
-        # print("solve time: {:}".format(self.time_fd(running_time)))
-        # print("residual= {res:.2e}")
-        # print(res)
-        # YY = np.from_numpy(YY.astype(self.np_dtype))
-
-        # print(YY)
+        # return weights of output layer to each networkd
         for ii in range(self.z_nets):
             for jj in range(self.y_nets): 
                 col_pos = ((ii)*y_nets+jj)
@@ -296,10 +220,8 @@ class basic_model(object):
                 model.w1 =YY[(col_pos)*num_nodes:(col_pos+1)*num_nodes,:].T
 
                 
+    # calculate governing equation 
     def net_f(self,model,YZ,beta,lb,ub): 
-        # YY.requires_grad_()
-        # ZZ.requires_grad_()
-        # YZ = np.concatenate([YY,ZZ],1)
         u_f,_ = model(YZ,lb,ub)
         w0_0 = model.w0[:,0:1].T
         w0_1 = model.w0[:,1:2].T
@@ -317,17 +239,19 @@ class basic_model(object):
         u_f,_ = model(y,lb,ub)
         w0_0 = model.w0[:,0:1].T
         w0_1 = model.w0[:,1:2].T
-        # u_u  = np.concatenate([self.gradients(u_f[:,ii],y)[0] for ii in range(u_f.size(1))],1)
+        # Y is for horizontal direction (top and bottom boundary)
         if flag == "Y":
+            # derivative of u with respect to y
             u_Y = (1-u_f**2)*(2/(ub[0]-lb[0])*w0_0)
-        #     u_Y  = np.concatenate([u_u[:,2*ii:2*ii+1]   for ii in range(int(u_u.size(1)/2))],1)
+        # Z is for vertical direction (left and right boundary)
         elif flag =="Z":
+            # derivative of u with respect to z
             u_Y = (1-u_f**2)*(2/(ub[1]-lb[1])*w0_1)
-        #     u_Y  = np.concatenate([u_u[:,2*ii+1:2*ii+2] for ii in range(int(u_u.size(1)/2))],1)
-        # del u_u
         return u_f,u_Y
 
+    # generate points on the boudaries
     def get_inter_data(self,y_data,z_data,y_points,z_points,flag):
+        # top and bottom
         if flag =="tb": 
             y = np.linspace(y_data[0,0].item(),y_data[0,-1].item(),y_points)
             z = np.linspace(z_data[0,0].item(),z_data[0,-1].item(),y_points)
@@ -335,6 +259,7 @@ class basic_model(object):
             y = np.linspace(y_data[-1,0].item(),y_data[-1,-1].item(),y_points)
             z = np.linspace(z_data[-1,0].item(),z_data[-1,-1].item(),y_points)
             y1 = np.concatenate((y.flatten()[:,None],z.flatten()[:,None]),1)
+        # left and right
         if flag =="lr":
             y = np.linspace(y_data[0,0].item(),y_data[-1,0].item(),z_points)
             z = np.linspace(z_data[0,0].item(),z_data[-1,0].item(),z_points)
@@ -342,10 +267,9 @@ class basic_model(object):
             y = np.linspace(y_data[0,-1].item(),y_data[-1,-1].item(),z_points)
             z = np.linspace(z_data[0,-1].item(),z_data[-1,-1].item(),z_points)
             y1 = np.concatenate((y.flatten()[:,None],z.flatten()[:,None]),1)
-        # y0.requires_grad_()
-        # y1.requires_grad_()
         return y0,y1
 
+    # generate points from uniform distribution
     def get_uniform_data(self,data, y_points,z_points,flag): 
         # include first and last element
         # data if format of numpy
@@ -358,23 +282,38 @@ class basic_model(object):
             return Y.T.flatten()[:,None]
         if flag =="Z":
             return Z.T.flatten()[:,None]
-
-    def get_gaussian_data(self,data,num_points): 
-        # 1D gaussian quadrature
-        lb = data[0,0].item()
-        ub = data[-1,0].item()
-        # 这里减2，因为后面要加入首尾两个点
-        quad_y, _ = np.polznomial.legendre.leggauss(num_points-2)
+    # generate points from gaussian integration point
+    def get_gaussian_data(self,data,y_points,z_points,flag): 
+        '''
+        data: Y or Z
+        y_points: number of samples in y
+        z_points: number of samples in z
+        '''
+        # 2D gaussian quadrature
+        y_lb = data[0,0].item()
+        y_ub = data[0,-1].item()        
+        z_lb = data[0,0].item()
+        z_ub = data[-1,0].item()        
+        # to add top and bottom points
+        quad_y, _ = np.polynomial.legendre.leggauss(y_points-2)
         quad_y = quad_y.reshape(-1,1)
-        # 矩阵乘法
-        y_grid = ((quad_y)*(ub-lb) + ub +lb)/2.0
-        sig0 = data[0,1]
-        sig = np.ones(num_points)*sig0
-        # 注意积分点中没有首尾两个点
-        Y = np.concatenate((data[0:1,0:1],np.from_numpy(y_grid.astype(self.np_dtype)),data[-1:,0:1]),0)
-        Y_f = np.concatenate((Y,sig.flatten()[:,None]),1)
-        return Y_f
+        y_grid0 = ((quad_y)*(y_ub-y_lb) + y_ub +y_lb)/2.0
+        y_grid = np.concatenate((data[0:1,0:1],y_grid0,data[0:1,-1:]),0)
+        quad_z, _ = np.polynomial.legendre.leggauss(z_points-2)
+        quad_z = quad_z.reshape(-1,1)
+        z_grid0 = ((quad_z)*(z_ub-z_lb) + z_ub +z_lb)/2.0
+        z_grid = np.concatenate((data[0:1,0:1],z_grid0,data[-1:,0:1]),0)
+        Y,Z = np.meshgrid(y_grid.flatten(),z_grid.flatten()) 
+        if flag =="Y":
+            return Y.T.flatten()[:,None]
+        if flag =="Z":
+            return Z.T.flatten()[:,None]
+    # generate points from Latin hypercube sampling
+    def get_lhs_data(self, y_points,z_points,lb,ub): 
+        YZ = lhs(2,y_points*z_points)*(ub-lb) + lb
+        return YZ
 
+    # initialize weight in the  neural networks
     def weight_init(self, model, hp_init,value1,value2,net_type):
         II = np.array([0+1j],dtype=self.np_complex)
         if net_type == "real":
@@ -432,7 +371,8 @@ class basic_model(object):
         model.b0 = b0_r+b0_i*II
         model.w1 = w1_r+w1_i*II
 
-    def to_model(self,Z_u,Y_test,Z_test,Beta,u_test,BCy,BCz):
+    # initialize parameters in the class
+    def to_model(self,Z_u,Y_test,Z_test,Sigma,freq,BCy,BCz):
         self.Z_t = Z_u["Z_t"]
         self.Z_b = Z_u["Z_b"]
         self.Z_l = Z_u["Z_l"]
@@ -441,29 +381,14 @@ class basic_model(object):
         self.u_b = Z_u["u_b"]
         self.u_l = Z_u["u_l"]
         self.u_r = Z_u["u_r"]
-        self.u_test = u_test
         self.Y_test = Y_test
         self.Z_test = Z_test
-        self.Beta = Beta
+        self.Sigma = Sigma
         self.BCy = BCy
         self.BCz = BCz
+        self.freq = freq
 
-    # def to_cuda(self,use_cuda,Z_u,Y_test,Z_test,Beta,u_test,BCy,BCz):
-    #     self.Z_t = np.from_numpy(Z_u["Z_t"].astype(self.np_dtype))
-    #     self.Z_b = np.from_numpy(Z_u["Z_b"].astype(self.np_dtype))
-    #     self.Z_l = np.from_numpy(Z_u["Z_l"].astype(self.np_dtype))
-    #     self.Z_r = np.from_numpy(Z_u["Z_r"].astype(self.np_dtype))
-    #     self.u_t = np.from_numpy(Z_u["u_t"].astype(self.np_dtype))
-    #     self.u_b = np.from_numpy(Z_u["u_b"].astype(self.np_dtype))
-    #     self.u_l = np.from_numpy(Z_u["u_l"].astype(self.np_dtype))
-    #     self.u_r = np.from_numpy(Z_u["u_r"].astype(self.np_dtype))
-    #     self.u_test = (np.from_numpy(u_test[0].astype(self.np_dtype)),np.from_numpy(u_test[1].astype(self.np_dtype)))
-    #     self.Y_test = np.from_numpy(Y_test.astype(self.np_dtype))
-    #     self.Z_test = np.from_numpy(Z_test.astype(self.np_dtype))
-    #     self.Beta = np.from_numpy(Beta.astype(self.np_dtype))
-    #     self.BCy = np.from_numpy(BCy)
-    #     self.BCz = np.from_numpy(BCz)
-
+    # predict solutions
     def predict(self, Y_test,Z_test,BCy0,BCz0):
         BCy     = np.copy(BCy0)
         BCz     = np.copy(BCz0)
@@ -475,24 +400,22 @@ class basic_model(object):
                 model = getattr(self,'model{}_{}'.format(ii,jj))
                 lb = getattr(self,'lb{}_{}'.format(ii,jj))
                 ub = getattr(self,'ub{}_{}'.format(ii,jj))
-                ny = BCz[ii+1]-BCz[ii]
-                nz = BCy[jj+1]-BCy[jj]
+                nz = BCz[ii+1]-BCz[ii]
+                ny = BCy[jj+1]-BCy[jj]
                 Y = Y_test[BCz[ii]:BCz[ii+1],BCy[jj]:BCy[jj+1]].flatten()[:,None]
                 Z = Z_test[BCz[ii]:BCz[ii+1],BCy[jj]:BCy[jj+1]].flatten()[:,None]
                 YZ = np.concatenate((Y,Z),1)
                 _,u0 = model(YZ,lb,ub)
-                u[BCz[ii]:BCz[ii+1],BCy[jj]:BCy[jj+1]] = u0.reshape(ny,nz)
-                # u_real[BCz[ii]:BCz[ii+1],BCy[jj]:BCy[jj+1]] = u0[:,0:1].reshape(ny,nz)
-                # u_imag[BCz[ii]:BCz[ii+1],BCy[jj]:BCy[jj+1]] = u0[:,1:2].reshape(ny,nz)
+                u[BCz[ii]:BCz[ii+1],BCy[jj]:BCy[jj+1]] = u0.reshape(nz,ny)
         return u
 
     def predict_cpu(self, Y_test,Z_test,BCy,BCz):
-        # Y_test = np.from_numpy(Y_test.astype(self.np_dtype))
-        # Z_test = np.from_numpy(Z_test.astype(self.np_dtype))
         u = self.predict(Y_test,Z_test,BCy,BCz)
         return u
+        # return u_real().numpy(),u_imag().numpy()
 
-    def predict_H(self, Y_test,Z_test,ii,jj):
+    # predict magnetic filed
+    def predict_derivative(self, Y_test,Z_test,ii,jj):
         '''
         Y_test: observation position(Y direction)
         Z_test: erath-air interface (Z direction)
@@ -502,12 +425,6 @@ class basic_model(object):
         u_f: [ur, ui]
         u_x: [ur_x,ui_x]
         '''
-        # BCy = self.BCy.clone()
-        # BCz = self.BCz.clone()
-        # Y_test = np.from_numpy(Y_test.astype(self.np_dtype)).flatten()[:,None]
-        # Z_test = np.from_numpy(Z_test.astype(self.np_dtype)).flatten()[:,None]
-        # Y_test.requires_grad=True
-        # Z_test.requires_grad=True
         Y_test = Y_test.flatten()[:,None]
         Z_test = Z_test.flatten()[:,None]
         model = getattr(self,'model{}_{}'.format(ii,jj))
@@ -519,47 +436,104 @@ class basic_model(object):
         u = np.dot(u0,sol.T)
         u_x = np.dot(u_x0,sol.T)
         return u,u_x
+    # calculate the magnetic field from electrical field
+    def cal_H(self,Y_obs,y_BC):
+        '''
+        Y_obs: observation stations
+        y_BC: y points in the boundaries.
+        '''
+        II = complex(0,1)
+        id_b = np.argwhere(y_BC<Y_obs[0])[-1][0]+1 # idx of model where obssevation begin(from 1) 
+        id_e = len(y_BC)-np.argwhere(y_BC>Y_obs[-1])[0][0]# idx of model where obssevation end 
 
-    # def relative_error(self, u_pred,u_star):
-    #     error_u = np.linalg.norm(u_star-u_pred)/np.linalg.norm(u_star)
-    #     return error_u#().cpu().numpy()
+        idx0 = np.where(Y_obs>y_BC[id_b])[0][0]
+        Y_0 = Y_obs[0:idx0]
+        Z_air = np.zeros(len(Y_0)) # air-earth interface
+        u_pred, u_x = self.predict_derivative(Y_0,Z_air, 0,id_b-1)
+        for ii in range(id_b+1,len(y_BC)-id_e):
+            idx = np.where(Y_obs>y_BC[ii])[0][0]
+            Y_0 = Y_obs[idx0:idx]
+            Z_air = np.zeros(len(Y_0))
+            u_pred0, u_x0 = self.predict_derivative(Y_0,Z_air, 0,ii-1)
+            # interface point
+            id0 = np.where(Y_obs==y_BC[ii-1])[0]
+            if id0.size !=0:
+                u_temp,u_x_temp = self.predict_derivative(Y_0[0],Z_air[0],0,ii-2)
+                u_pred0[0] = (u_pred0[0]+ u_temp)/2.0
+                u_x0[0]    = (u_x0[0] + u_x_temp)/2.0
+            u_pred = np.concatenate((u_pred,u_pred0),0)
+            u_x    = np.concatenate((u_x,u_x0),0)
+            idx0 = np.copy(idx)
 
-    def rms_error(self,u_pred,u_star): 
-        return np.sqrt(np.sum(np.abs(u_pred-u_star)**2)/len(u_pred))
 
-    def max_error(self,u_pred,u_star):
-        return np.max(np.abs(u_pred-u_star))
+        ii = len(y_BC)-id_e
+        Y_0 = Y_obs[idx:]
+        Z_air = np.zeros(len(Y_0)) # 空气-地面分界面
 
-    def save_param(self, path):
-        np.save(self.model.state_dict(),path)
+        u_pred0, u_x0 = self.predict_derivative(Y_0,Z_air, 0,ii-1)
 
-    def load_param(self, path):
-        self.model.load_state_dict(np.load(path))
+        id0 = np.where(Y_obs==y_BC[ii-1])[0]
+        if id0.size !=0:
+            u_temp,u_x_temp = self.predict_derivative(Y_0[0],Z_air[0],0,ii-2)
+            u_pred0[0] = (u_pred0[0]+ u_temp)/2.0
+            u_x0[0]    = (u_x0[0] + u_x_temp)/2.0
 
-    def print_start(self):
-        print("the training start")
-        print("---------------------------------------")
-
-    def print_lf_start(self):
-        print("---------------------------------------")
-        print("the LBFGS training start")
-
-    def summarz(self,model):
-        print(model)
-
-    def print_param(self,model): 
-        for param in model.parameters(): 
-            print(param)
+        u_pred = np.concatenate((u_pred,u_pred0),0)
+        u_x    = np.concatenate((u_x,u_x0),0)
+        Ex   = u_pred
+        Ex_z = u_x
+        Hy = Ex_z/(II*self.omega*self.mu_0)
+        Zxy = Ex/Hy
+        rho_a = np.abs(Zxy)**2/(self.omega*self.mu_0)
+        phs_a = np.arctan2(Zxy.imag,Zxy.real)* 180.0 / np.pi*(-1.0)
+        return Zxy, rho_a,phs_a
 
     def time_fd(self,time):
         return datetime.fromtimestamp(time).strftime("%M:%S")
-
-    def freeze_model(self,model): 
-        for param in model.parameters():
-            param.requires_grad = False
-
-    def get_A(self): 
-        return(self.A())
-
-    def pass_func(self,*args): 
+    def pass_func(self,*args):
         pass
+
+# calculate the electrical field on the boundaries
+def BC_struct(Z,Y,nz,ny,BCz,BCy,freq,hL,sigL,hR,sigR):
+    net_z = len(BCz)-1
+    net_y = len(BCy)-1
+    Z_t = np.ones((net_y*ny,2))
+    Z_b = np.ones((net_y*ny,2))
+    Z_l = np.ones((net_z*nz,2))
+    Z_r = np.ones((net_z*nz,2))
+    for jj in range(net_z):   # left and right    
+        z0 = np.linspace(Z[BCz[jj],0],Z[BCz[jj+1]-1,0],nz)
+        y0 = np.linspace(Y[BCz[jj],0],Y[BCz[jj+1]-1,0],nz)
+        Z_l[jj*nz:(jj+1)*nz,:] = np.hstack((y0.flatten()[:,None],z0.flatten()[:,None]))
+        z0 = np.linspace(Z[BCz[jj],-1],Z[BCz[jj+1]-1,-1],nz)
+        y0 = np.linspace(Y[BCz[jj],-1],Y[BCz[jj+1]-1,-1],nz)
+        Z_r[jj*nz:(jj+1)*nz,:] = np.hstack((y0.flatten()[:,None],z0.flatten()[:,None]))
+#     u0 = getE1D(freq,hL,sigL,Z_l[:,1])
+    u0 = mt1dte(freq,hL,sigL,Z_l[:,1])
+    u_l= u0.flatten()[:,None]
+#     u0 = getE1D(freq,hR,sigR,Z_r[:,1])
+    u0 = mt1dte(freq,hR,sigR,Z_r[:,1])
+    u_r= u0.flatten()[:,None]
+    for jj in range(net_y): # top and bottom
+        z0 = np.linspace(Z[0,BCy[jj]],Z[0,BCy[jj+1]-1],ny)
+        y0 = np.linspace(Y[0,BCy[jj]],Y[0,BCy[jj+1]-1],ny)
+        Z_t[jj*ny:(jj+1)*ny,:] = np.hstack((y0.flatten()[:,None],z0.flatten()[:,None]))
+        z0 = np.linspace(Z[-1,BCy[jj]],Z[-1,BCy[jj+1]-1],ny)
+        y0 = np.linspace(Y[-1,BCy[jj]],Y[-1,BCy[jj+1]-1],ny)
+        Z_b[jj*ny:(jj+1)*ny,:] = np.hstack((y0.flatten()[:,None],z0.flatten()[:,None]))
+    u1 = u0[0]*np.ones_like(Z_t[:,1])
+    u_t = u1.flatten()[:,None]
+    u1 = u0[-1]*np.ones_like(Z_b[:,1])
+    u_b = u1.flatten()[:,None]
+    Z_dict = {
+        "Z_t": Z_t,
+        "Z_b": Z_b,
+        "Z_l": Z_l,
+        "Z_r": Z_r,
+        "u_t": u_t,
+        "u_b": u_b,
+        "u_r": u_r,
+        "u_l": u_l
+
+    }
+    return Z_dict

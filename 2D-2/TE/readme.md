@@ -1,1 +1,0 @@
-basic_model is for total field method, while second_model for secondary field method
